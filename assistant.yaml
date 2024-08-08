@@ -1,5 +1,5 @@
 messages:
-  pressSpace: "Press and hold space to speak"
+  pressSpace: "Awaiting pressure input"
   loadingModel: "Loading..."
   noAudioInput: "Error: No sound input!"
 

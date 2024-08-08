@@ -15,6 +15,8 @@ import whisper
 import logging
 import threading
 import queue
+import random
+import serial  # Import the serial library
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,6 +40,17 @@ INPUT_CHUNK = 1024
 OLLAMA_REST_HEADERS = {'Content-Type': 'application/json'}
 INPUT_CONFIG_PATH ="assistant.yaml"
 
+CONTROL_INPUT_PROMPT = "You're a bench that's just been sat on. Keep your response to maximum 3 sentences. Use simple words. I will pass you a pressure value, scaled from 80 to 100, using the value as a trigger to respond, make a zany guess at what is sitting on you. Don't say a person, or be too logical. Be creative and have fun!"
+# BENCH_PROMPTS = [
+#     "give an interesting perspective as a bench",
+#     "describe the environmental impact of park benches",
+#     "how can park benches contribute to the sense of community?",
+#     "how can benches offer some mindful reflection?"
+# ]
+BENCH_PROMPTS = [
+    ""
+]
+
 class Assistant:
     def __init__(self):
         logging.info("Initializing Assistant")
@@ -54,7 +67,7 @@ class Assistant:
 
         self.audio = pyaudio.PyAudio()
 
-        self.tts = pyttsx3.init("nsss");
+        self.tts = pyttsx3.init("nsss")
         self.tts.setProperty('rate', self.tts.getProperty('rate') - 20)
 
         try:
@@ -75,6 +88,14 @@ class Assistant:
         time.sleep(0.5)
         self.display_message(self.config.messages.pressSpace)
 
+        # Initialize serial connection
+        try:
+            self.serial_port = serial.Serial('/dev/tty.usbmodem2101', 9600, timeout=1)
+            logging.info(f"Serial port opened: {self.serial_port.name}")
+        except serial.SerialException as e:
+            logging.error(f"Error opening serial port: {str(e)}")
+            self.wait_exit()
+
     def wait_exit(self):
         while True:
             self.display_message(self.config.messages.noAudioInput)
@@ -86,6 +107,8 @@ class Assistant:
     def shutdown(self):
         logging.info("Shutting down Assistant")
         self.audio.terminate()
+        if hasattr(self, 'serial_port'):
+            self.serial_port.close()
         pygame.quit()
         sys.exit()
 
@@ -163,7 +186,7 @@ class Assistant:
 
         pygame.display.flip()
 
-    def waveform_from_mic(self, key = pygame.K_SPACE) -> np.ndarray:
+    def waveform_from_mic(self, key=pygame.K_SPACE) -> np.ndarray:
         logging.info("Capturing waveform from microphone")
         self.display_rec_start()
 
@@ -175,7 +198,7 @@ class Assistant:
         frames = []
 
         while True:
-            pygame.event.pump() # process event queue
+            pygame.event.pump()  # process event queue
             pressed = pygame.key.get_pressed()
             if pressed[key]:
                 data = stream.read(INPUT_CHUNK)
@@ -212,16 +235,16 @@ class Assistant:
 
         return result_queue.get()
 
-
     def ask_ollama(self, prompt, responseCallback):
         logging.info(f"Asking OLLaMa with prompt: {prompt}")
         full_prompt = prompt if hasattr(self, "contextSent") else (prompt)
         self.contextSent = True
+        random_prompt = random.choice(BENCH_PROMPTS)
         jsonParam = {
             "model": self.config.ollama.model,
             "stream": True,
             "context": self.context,
-            "prompt": full_prompt
+            "prompt": f"{CONTROL_INPUT_PROMPT}, and Prompt is: {random_prompt}"
         }
         
         try:
@@ -256,7 +279,6 @@ class Assistant:
             logging.error(f"An error occurred while asking OLLaMa: {str(e)}")
             responseCallback("Sorry, an error occurred. Please try again.")
 
-
     def text_to_speech(self, text):
         logging.info(f"Converting text to speech: {text}")
         print('\nAI:\n', text.strip())
@@ -283,35 +305,37 @@ class Assistant:
         speech_thread = threading.Thread(target=play_speech)
         speech_thread.start()
 
-
 def main():
     logging.info("Starting Assistant")
     pygame.init()
 
-    ass = Assistant()
+    assistant_ctrl = Assistant()
 
-    push_to_talk_key = pygame.K_SPACE
-    quit_key = pygame.K_ESCAPE
-
+    # Main loop to read pressure sensor and trigger LLM
     while True:
-        ass.clock.tick(60)
-        for event in pygame.event.get():
-            if event.type == pygame.KEYDOWN:
-                if event.key == push_to_talk_key:
-                    logging.info("Push-to-talk key pressed")
-                    speech = ass.waveform_from_mic(push_to_talk_key)
-
-                    transcription = ass.speech_to_text(waveform=speech)
-
-                    ass.ask_ollama(transcription, ass.text_to_speech)
-
+        assistant_ctrl.clock.tick(60)
+        
+        # Read pressure sensor value from serial port
+        if assistant_ctrl.serial_port.in_waiting > 0:
+            try:
+                line = assistant_ctrl.serial_port.readline().decode('utf-8').strip()
+                pressure_value = int(float(line))
+                logging.info(f"Pressure sensor line reading: {pressure_value}")
+                
+                if pressure_value > 80:  # Adjust threshold as necessary
+                    logging.info("Pressure detected, triggering LLM")
+                    random_prompt = random.choice(BENCH_PROMPTS)
+                    assistant_ctrl.ask_ollama(random_prompt, assistant_ctrl.text_to_speech)
                     time.sleep(1)
-                    ass.display_message(ass.config.messages.pressSpace)
+                    assistant_ctrl.display_message(assistant_ctrl.config.messages.pressSpace)
+            except ValueError:
+                logging.warning("Received invalid pressure value")
 
-                elif event.key == quit_key:
-                    logging.info("Quit key pressed")
-                    ass.shutdown()
-
+        for event in pygame.event.get():
+            print(event)
+            if event.type == pygame.locals.QUIT:
+                pass
+                # assistant_ctrl.shutdown()
 
 if __name__ == "__main__":
     main()
